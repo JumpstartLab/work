@@ -56,7 +56,7 @@ func fakeSwitchboard(t *testing.T, handler func(capability string, args map[stri
 }
 
 func TestTokenFileIsPrivate(t *testing.T) {
-	withToken(t, `{"email":"jonah@ohanaequities.com"}`)
+	withToken(t, `{"email":"guest@example.com"}`)
 	fi, err := os.Stat(tokenPath())
 	if err != nil {
 		t.Fatal(err)
@@ -70,33 +70,33 @@ func TestTokenFileIsPrivate(t *testing.T) {
 }
 
 func TestWhoamiReadsEmailClaim(t *testing.T) {
-	withToken(t, `{"email":"jonah@ohanaequities.com"}`)
+	withToken(t, `{"email":"guest@example.com"}`)
 	who, err := whoami()
-	if err != nil || who != "jonah@ohanaequities.com" {
+	if err != nil || who != "guest@example.com" {
 		t.Fatalf("whoami = %q, %v", who, err)
 	}
 }
 
 func TestMyBoxesAndWake(t *testing.T) {
-	withToken(t, `{"email":"jonah@ohanaequities.com"}`)
+	withToken(t, `{"email":"guest@example.com"}`)
 	fakeSwitchboard(t, func(capability string, args map[string]any) (string, bool, int) {
 		switch capability {
 		case "boxes.mine":
-			return `{"boxes":[{"name":"ohana-dev","connect":{"user":"jcasimir","host":"ohana-dev"}}]}`, false, 0
+			return `{"boxes":[{"name":"guest-dev","connect":{"user":"guest","host":"guest-dev"}}]}`, false, 0
 		case "boxes.wake":
-			if args["box"] != "ohana-dev" {
+			if args["box"] != "guest-dev" {
 				t.Errorf("wake args %v", args)
 			}
-			return `{"box":"ohana-dev","state":"running","health":"starting","connect":{"user":"jcasimir","host":"ohana-dev"}}`, false, 0
+			return `{"box":"guest-dev","state":"running","health":"starting","connect":{"user":"guest","host":"guest-dev"}}`, false, 0
 		}
 		return `{"error":["unexpected"]}`, true, 0
 	})
 	boxes, err := myBoxes()
-	if err != nil || len(boxes) != 1 || boxes[0].Connect.Host != "ohana-dev" {
+	if err != nil || len(boxes) != 1 || boxes[0].Connect.Host != "guest-dev" {
 		t.Fatalf("myBoxes = %+v, %v", boxes, err)
 	}
-	s, err := wake("ohana-dev")
-	if err != nil || s.State != "running" || s.Connect.User != "jcasimir" {
+	s, err := wake("guest-dev")
+	if err != nil || s.State != "running" || s.Connect.User != "guest" {
 		t.Fatalf("wake = %+v, %v", s, err)
 	}
 }

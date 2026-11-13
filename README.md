@@ -6,11 +6,8 @@ drops you into its persistent `work` tmux session over your own tailnet.
 
 ## Install
 
-The repo is private, so install through an authenticated
-[GitHub CLI](https://cli.github.com) (`brew install gh`, then `gh auth login`):
-
 ```sh
-gh api repos/JumpstartLab/work/contents/install.sh -H 'Accept: application/vnd.github.raw' | sh
+curl -fsSL https://raw.githubusercontent.com/JumpstartLab/work/main/install.sh | sh
 work login
 work
 ```

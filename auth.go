@@ -92,8 +92,29 @@ func (tr *tokenResponse) toToken(prevRefresh string) *token {
 	return t
 }
 
-func login() error {
-	_, raw, err := postForm("/oauth/v2/device_authorization", url.Values{"client_id": {clientID}, "scope": {scope}})
+// loginScope adds Zitadel's org scope for the email's domain. The device flow
+// never passes the edge's "work email" step, so without it Zitadel signs the
+// person in through the default org, which refuses customer accounts. An empty
+// email (a personal address that belongs to no org) keeps the default org.
+func loginScope(email string) (string, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return scope, nil
+	}
+	at := strings.LastIndex(email, "@")
+	domain := email[at+1:]
+	if at < 1 || !strings.Contains(domain, ".") || strings.ContainsAny(domain, " /") {
+		return "", fmt.Errorf("%q is not an email address", email)
+	}
+	return scope + " urn:zitadel:iam:org:domain:primary:" + domain, nil
+}
+
+func login(email string) error {
+	sc, err := loginScope(email)
+	if err != nil {
+		return err
+	}
+	_, raw, err := postForm("/oauth/v2/device_authorization", url.Values{"client_id": {clientID}, "scope": {sc}})
 	if err != nil {
 		return err
 	}

@@ -8,7 +8,7 @@ drops you into its persistent `work` tmux session over your own tailnet.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/JumpstartLab/work/main/install.sh | sh
-work login
+work login you@yourcompany.com
 work
 ```
 
@@ -21,7 +21,7 @@ network changes. Without `et`, `work` uses `ssh`.
 
 | | |
 |---|---|
-| `work login` | Sign in (device code → your browser → your Google account) |
+| `work login <email>` | Sign in (device code → your browser → your Google account). The email picks your organization; leave it off only for a personal address that belongs to none |
 | `work` / `work <box>` | Wake the box if needed, attach its `work` tmux session |
 | `work list` | Your boxes and their state |
 | `work code <box> [dir]` | VS Code on this machine, Remote-SSH'd into the box |

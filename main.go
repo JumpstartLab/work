@@ -1,6 +1,6 @@
 // work — the front door to your dev box.
 //
-//	work login            sign in (your own Google account, via Jumpstart Lab SSO)
+//	work login <email>    sign in (your own Google account, via Jumpstart Lab SSO)
 //	work                  open your box (if you have exactly one)
 //	work <box>            wake it if it is asleep, then attach its `work` tmux session
 //	work list             your boxes and whether each is running
@@ -41,7 +41,11 @@ func run(args []string) error {
 	}
 	switch cmd {
 	case "login":
-		return login()
+		email := ""
+		if len(args) > 1 {
+			email = args[1]
+		}
+		return login(email)
 	case "logout":
 		return logout()
 	case "list", "ls":
@@ -82,7 +86,7 @@ func run(args []string) error {
 }
 
 const usage = `usage: work [<box>]           open your box (wakes it if asleep)
-       work login             sign in with your own account
+       work login <email>     sign in with your own work email
        work list              your boxes and their state
        work code <box> [dir]  VS Code here, Remote-SSH'd into the box
        work doctor            check the whole path
@@ -181,7 +185,7 @@ func doctor() error {
 		fmt.Printf("  FAIL  %s: %v\n        → %s\n", name, err, fix)
 	}
 	_, err := accessToken()
-	check("signed in", err, "work login")
+	check("signed in", err, "work login <your email>")
 	if err == nil {
 		who, _ := whoami()
 		fmt.Printf("        as %s\n", who)

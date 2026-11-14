@@ -19,6 +19,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
 	"strings"
 	"syscall"
@@ -157,7 +158,55 @@ func open(name string) error {
 	if err != nil {
 		return errors.New("neither et nor ssh is installed")
 	}
-	return execve(p, connectArgs("ssh", c))
+	return stayConnected(p, c)
+}
+
+// stayConnected runs ssh and, when the connection drops (the laptop slept,
+// the network changed), reconnects to the same tmux session on the box, so
+// nothing is lost and nothing extra (Eternal Terminal) has to be installed.
+// ssh exits 255 for a lost connection AND for a refused login, so a drop is
+// only retried after a session that had actually been up; a first attempt
+// that fails at once is reported, not looped on.
+// Tunables, variables so tests can shrink them.
+var (
+	settled       = 15 * time.Second // up this long = it was a real session
+	giveUp        = 10 * time.Minute // stop retrying after this long offline
+	reconnectWait = 2 * time.Second
+)
+
+func stayConnected(sshPath string, c connect) error {
+	// Ctrl-C belongs to the remote terminal; don't let it kill the loop.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	defer signal.Stop(sig)
+
+	everUp := false
+	var offlineSince time.Time
+	wait := reconnectWait
+	for {
+		start := time.Now()
+		cmd := exec.Command(sshPath, connectArgs("ssh", c)[1:]...)
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+		err := cmd.Run()
+		var exit *exec.ExitError
+		if err == nil || !errors.As(err, &exit) || exit.ExitCode() != 255 {
+			return err // detached, exited, or ssh itself failed to start
+		}
+		if time.Since(start) >= settled {
+			everUp, offlineSince, wait = true, time.Now(), reconnectWait
+		}
+		if !everUp {
+			return fmt.Errorf("could not connect to %s (see the message above; `work doctor` checks each piece)", c.Host)
+		}
+		if time.Since(offlineSince) > giveUp {
+			return fmt.Errorf("lost the connection to %s and could not get it back for %s; run `work` when you're online", c.Host, giveUp)
+		}
+		fmt.Fprintf(os.Stderr, "\r\nconnection to %s lost — reconnecting…\r\n", c.Host)
+		time.Sleep(wait)
+		if wait < 30*time.Second {
+			wait *= 2
+		}
+	}
 }
 
 // mcpCallbackPort is where Claude Code on the box listens for an MCP sign-in's
@@ -176,7 +225,12 @@ func connectArgs(tool string, c connect) []string {
 	if tool == "et" {
 		return []string{"et", "-t", mcpCallbackPort + ":" + mcpCallbackPort, target, "-c", attach}
 	}
-	return []string{"ssh", "-t", "-L", mcpCallbackPort + ":localhost:" + mcpCallbackPort, target, attach}
+	return []string{"ssh", "-t",
+		// Notice a dead connection within ~45s instead of hanging on it.
+		"-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
+		// macOS: ask for the key's passphrase once and keep it in the Keychain.
+		"-o", "IgnoreUnknown=UseKeychain", "-o", "UseKeychain=yes", "-o", "AddKeysToAgent=yes",
+		"-L", mcpCallbackPort + ":localhost:" + mcpCallbackPort, target, attach}
 }
 
 func code(name, dir string) error {

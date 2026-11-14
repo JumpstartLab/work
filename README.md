@@ -13,9 +13,11 @@ work
 ```
 
 You also need [Tailscale](https://tailscale.com/download) signed in to the
-tailnet your box joined, and optionally [Eternal Terminal](https://eternalterminal.dev)
-(`brew install MisterTea/et/et`) for a connection that survives sleep and
-network changes. Without `et`, `work` uses `ssh`.
+tailnet your box joined. `work` reconnects on its own when your laptop sleeps or
+changes networks (your session lives in tmux on the box, so nothing is lost), and
+on macOS it keeps your SSH key's passphrase in the Keychain after the first ask.
+If [Eternal Terminal](https://eternalterminal.dev) is installed, `work` uses it
+instead.
 
 ## Commands
 

@@ -60,6 +60,8 @@ func run(args []string) error {
 			dir = args[2]
 		}
 		return code(args[1], dir)
+	case "bus":
+		return bus(args[1:])
 	case "doctor":
 		return doctor()
 	case "version", "--version":
@@ -88,6 +90,7 @@ func run(args []string) error {
 
 const usage = `usage: work [<box>]           open your box (wakes it if asleep)
        work login <email>     sign in with your own work email
+       work bus enroll [name] put this machine on your private party-line bus
        work list              your boxes and their state
        work code <box> [dir]  VS Code here, Remote-SSH'd into the box
        work doctor            check the whole path

@@ -127,3 +127,18 @@ func TestNotSignedIn(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestLoginScopeAddsTheEmailsOrg(t *testing.T) {
+	sc, err := loginScope("  Me@Example.COM ")
+	if err != nil || !strings.HasSuffix(sc, " urn:zitadel:iam:org:domain:primary:example.com") {
+		t.Fatalf("scope %q, err %v", sc, err)
+	}
+	if sc, _ := loginScope(""); sc != scope {
+		t.Fatalf("no email must keep the default scope, got %q", sc)
+	}
+	for _, bad := range []string{"nobody", "@example.com", "x@localhost", "x@exa mple.com"} {
+		if _, err := loginScope(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}

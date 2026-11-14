@@ -198,8 +198,16 @@ func TestBusEnrollWritesTheNodeToken(t *testing.T) {
 	}))
 	defer srv.Close()
 	t.Setenv("WORK_PARTY_LINE_URL", srv.URL)
+	var mcpToken string
+	addPartyLineMCP = func(tok string) error { mcpToken = tok; return nil }
 	if err := busEnroll("guest-vm"); err != nil {
 		t.Fatal(err)
+	}
+	if mcpToken != "nt-123" {
+		t.Fatalf("Claude Code was given token %q, want the new one", mcpToken)
+	}
+	if a := strings.Join(mcpAddArgs("T"), " "); a != "mcp add --scope user --transport http party-line "+srv.URL+"/mcp --header Authorization: Bearer T" {
+		t.Fatalf("mcp add args: %s", a)
 	}
 	if got["machine"] != "guest-vm" {
 		t.Fatalf("sent %v", got)

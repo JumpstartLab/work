@@ -142,3 +142,15 @@ func TestLoginScopeAddsTheEmailsOrg(t *testing.T) {
 		}
 	}
 }
+
+func TestConnectForwardsTheMCPCallbackPort(t *testing.T) {
+	c := connect{User: "guest", Host: "guest-vm"}
+	ssh := strings.Join(connectArgs("ssh", c), " ")
+	if ssh != "ssh -t -L 3335:localhost:3335 guest@guest-vm tmux new-session -A -s work" {
+		t.Fatalf("ssh argv: %s", ssh)
+	}
+	et := strings.Join(connectArgs("et", c), " ")
+	if et != "et -t 3335:3335 guest@guest-vm -c tmux new-session -A -s work" {
+		t.Fatalf("et argv: %s", et)
+	}
+}

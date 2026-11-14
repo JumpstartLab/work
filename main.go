@@ -150,16 +150,33 @@ func open(name string) error {
 	if err != nil {
 		return err
 	}
-	target := c.User + "@" + c.Host
-	attach := "tmux new-session -A -s work"
 	if p, err := exec.LookPath("et"); err == nil && reachable(c.Host, "2022") {
-		return execve(p, []string{"et", target, "-c", attach})
+		return execve(p, connectArgs("et", c))
 	}
 	p, err := exec.LookPath("ssh")
 	if err != nil {
 		return errors.New("neither et nor ssh is installed")
 	}
-	return execve(p, []string{"ssh", "-t", target, attach})
+	return execve(p, connectArgs("ssh", c))
+}
+
+// mcpCallbackPort is where Claude Code on the box listens for an MCP sign-in's
+// OAuth redirect (the switchboard entry's `callbackPort`, set by server-admin's
+// devbox user-prep). The browser doing the sign-in runs on THIS machine, so its
+// redirect to localhost:<port> has to be carried to the box: every connection
+// forwards it. If the port is busy here (a second session), ssh and et warn and
+// carry on.
+const mcpCallbackPort = "3335"
+
+// connectArgs is the argv for opening the box's persistent tmux session with
+// the MCP callback port forwarded.
+func connectArgs(tool string, c connect) []string {
+	target := c.User + "@" + c.Host
+	attach := "tmux new-session -A -s work"
+	if tool == "et" {
+		return []string{"et", "-t", mcpCallbackPort + ":" + mcpCallbackPort, target, "-c", attach}
+	}
+	return []string{"ssh", "-t", "-L", mcpCallbackPort + ":localhost:" + mcpCallbackPort, target, attach}
 }
 
 func code(name, dir string) error {

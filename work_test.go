@@ -146,11 +146,42 @@ func TestLoginScopeAddsTheEmailsOrg(t *testing.T) {
 func TestConnectForwardsTheMCPCallbackPort(t *testing.T) {
 	c := connect{User: "guest", Host: "guest-vm"}
 	ssh := strings.Join(connectArgs("ssh", c), " ")
-	if ssh != "ssh -t -L 3335:localhost:3335 guest@guest-vm tmux new-session -A -s work" {
+	if ssh != "ssh -t -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o IgnoreUnknown=UseKeychain -o UseKeychain=yes -o AddKeysToAgent=yes -L 3335:localhost:3335 guest@guest-vm tmux new-session -A -s work" {
 		t.Fatalf("ssh argv: %s", ssh)
 	}
 	et := strings.Join(connectArgs("et", c), " ")
 	if et != "et -t 3335:3335 guest@guest-vm -c tmux new-session -A -s work" {
 		t.Fatalf("et argv: %s", et)
+	}
+}
+
+func fakeSSH(t *testing.T, script string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "ssh")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestStayConnectedReconnectsAfterADrop(t *testing.T) {
+	settled, reconnectWait = 50*time.Millisecond, 10*time.Millisecond
+	count := filepath.Join(t.TempDir(), "n")
+	// First run: a session that was up, then dropped (255). Second: clean exit.
+	ssh := fakeSSH(t, `n=$(cat `+count+` 2>/dev/null || echo 0); echo $((n+1)) > `+count+`
+if [ "$n" = 0 ]; then sleep 0.2; exit 255; fi; exit 0`)
+	if err := stayConnected(ssh, connect{User: "u", Host: "h"}); err != nil {
+		t.Fatalf("want a clean exit after reconnecting, got %v", err)
+	}
+	if b, _ := os.ReadFile(count); strings.TrimSpace(string(b)) != "2" {
+		t.Fatalf("ssh ran %s times, want 2", b)
+	}
+}
+
+func TestStayConnectedDoesNotLoopOnARefusedLogin(t *testing.T) {
+	settled = time.Second
+	ssh := fakeSSH(t, "exit 255")
+	if err := stayConnected(ssh, connect{User: "u", Host: "h"}); err == nil {
+		t.Fatal("a first attempt that fails at once must be an error, not a retry loop")
 	}
 }

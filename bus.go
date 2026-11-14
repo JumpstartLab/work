@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -128,6 +129,32 @@ func busEnroll(machine string) error {
 		tenant = " (tenant " + out.Tenant.Slug + ")"
 	}
 	fmt.Printf("Enrolled %s on party-line%s; token in %s.\n", machine, tenant, path)
+	if err := addPartyLineMCP(out.Token); err != nil {
+		fmt.Fprintf(os.Stderr, "Claude Code not set up for party-line (%v).\nTo do it by hand: %s\n", err,
+			strings.Join(append([]string{"claude"}, mcpAddArgs("<token from "+path+">")...), " "))
+	}
+	return nil
+}
+
+// mcpAddArgs registers party-line's HTTP MCP (the tenant-scoped "phone"
+// toolset: send, check_inbox, read_thread, roll_call, lines) for every project.
+func mcpAddArgs(token string) []string {
+	return []string{"mcp", "add", "--scope", "user", "--transport", "http", "party-line",
+		partyLineURL() + "/mcp", "--header", "Authorization: Bearer " + token}
+}
+
+// addPartyLineMCP points Claude Code at party-line with this machine's token,
+// replacing an earlier entry (a re-enroll rotates the token).
+var addPartyLineMCP = func(token string) error {
+	claude, err := exec.LookPath("claude")
+	if err != nil {
+		return errors.New("claude is not installed here")
+	}
+	_ = exec.Command(claude, "mcp", "remove", "--scope", "user", "party-line").Run()
+	if out, err := exec.Command(claude, mcpAddArgs(token)...).CombinedOutput(); err != nil {
+		return fmt.Errorf("claude mcp add: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	fmt.Println("Claude Code now has party-line (restart open Claude sessions to see it).")
 	return nil
 }
 

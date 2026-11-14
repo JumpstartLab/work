@@ -24,6 +24,7 @@ instead.
 | | |
 |---|---|
 | `work login <email>` | Sign in (device code → your browser → your Google account). The email picks your organization; leave it off only for a personal address that belongs to none |
+| `work bus enroll [name]` | Put this machine on your own private party-line bus, so the Claude sessions on your laptop and your box can message each other (and nobody else's). Defaults to this computer's name; run it again to rotate the token |
 | `work` / `work <box>` | Wake the box if needed, attach its `work` tmux session |
 | `work list` | Your boxes and their state |
 | `work code <box> [dir]` | VS Code on this machine, Remote-SSH'd into the box |

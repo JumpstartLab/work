@@ -185,3 +185,55 @@ func TestStayConnectedDoesNotLoopOnARefusedLogin(t *testing.T) {
 		t.Fatal("a first attempt that fails at once must be an error, not a retry loop")
 	}
 }
+
+func TestBusEnrollWritesTheNodeToken(t *testing.T) {
+	withToken(t, `{"email":"guest@example.com"}`)
+	var got map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/enrollments" || r.Header.Get("Authorization") != "Bearer h.eyJlbWFpbCI6Imd1ZXN0QGV4YW1wbGUuY29tIn0.s" {
+			t.Errorf("unexpected request %s %q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.Write([]byte(`{"ok":true,"machine":"guest-vm","token":"nt-123","tenant":{"slug":"guest"}}`))
+	}))
+	defer srv.Close()
+	t.Setenv("WORK_PARTY_LINE_URL", srv.URL)
+	if err := busEnroll("guest-vm"); err != nil {
+		t.Fatal(err)
+	}
+	if got["machine"] != "guest-vm" {
+		t.Fatalf("sent %v", got)
+	}
+	p := filepath.Join(partyLineDir(), "guest-vm.env")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "PARTY_LINE_URL=" + srv.URL + "\nNODE_TOKEN=nt-123\nNODE_MACHINE=guest-vm\n"
+	if string(b) != want {
+		t.Fatalf("env file:\n%s\nwant:\n%s", b, want)
+	}
+	if fi, _ := os.Stat(p); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v, want 0600", fi.Mode().Perm())
+	}
+}
+
+func TestBusEnrollReportsARefusal(t *testing.T) {
+	withToken(t, `{"email":"guest@example.com"}`)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"error":"enrollment is not open for this address"}`))
+	}))
+	defer srv.Close()
+	t.Setenv("WORK_PARTY_LINE_URL", srv.URL)
+	err := busEnroll("guest-vm")
+	if err == nil || !strings.Contains(err.Error(), "not open for this address") {
+		t.Fatalf("want the server's reason, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(partyLineDir(), "guest-vm.env")); statErr == nil {
+		t.Fatal("a refused enrollment must not write a token file")
+	}
+	if busEnroll("Bad Name") == nil {
+		t.Fatal("bad machine name accepted")
+	}
+}

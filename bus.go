@@ -36,6 +36,23 @@ func partyLineDir() string {
 	return filepath.Join(dir, "party-line")
 }
 
+// What party-line's enrollment error codes mean to the person running this.
+var enrollErrors = map[string]string{
+	"missing_token":             "sign in first with `work login <your email>`",
+	"invalid_token":             "your sign-in isn't valid here; run `work login <your email>` again",
+	"expired":                   "your sign-in expired; run `work login <your email>` again",
+	"wrong_audience":            "this sign-in isn't for party-line; update work and sign in again",
+	"wrong_issuer":              "this sign-in isn't for party-line; update work and sign in again",
+	"wrong_client":              "this sign-in isn't for party-line; update work and sign in again",
+	"not_entitled":              "your account isn't on party-line yet; ask Jumpstart Lab",
+	"email_not_verified":        "your email isn't verified; ask Jumpstart Lab",
+	"archived":                  "your party-line account is archived; ask Jumpstart Lab",
+	"env_provisioned":           "this machine's party-line token is managed for you; nothing to do",
+	"machine_taken":             "another machine already uses that name; pick another: `work bus enroll <name>`",
+	"invalid_machine":           "that machine name isn't allowed; use lowercase letters, digits and dashes",
+	"enrollment_not_configured": "party-line isn't open for new machines yet; try again later",
+}
+
 var machineName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 
 // defaultMachine is this computer's short host name, lowercased.
@@ -80,6 +97,9 @@ func busEnroll(machine string) error {
 	_ = json.Unmarshal(raw, &out)
 	if resp.StatusCode/100 != 2 || out.Token == "" {
 		msg := out.Error
+		if plain, ok := enrollErrors[msg]; ok {
+			msg = plain + " (" + msg + ")"
+		}
 		if msg == "" {
 			msg = strings.TrimSpace(string(raw))
 			if len(msg) > 200 {

@@ -222,12 +222,12 @@ func TestBusEnrollReportsARefusal(t *testing.T) {
 	withToken(t, `{"email":"guest@example.com"}`)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(`{"error":"enrollment is not open for this address"}`))
+		w.Write([]byte(`{"error":"not_entitled"}`))
 	}))
 	defer srv.Close()
 	t.Setenv("WORK_PARTY_LINE_URL", srv.URL)
 	err := busEnroll("guest-vm")
-	if err == nil || !strings.Contains(err.Error(), "not open for this address") {
+	if err == nil || !strings.Contains(err.Error(), "isn't on party-line yet") || !strings.Contains(err.Error(), "(not_entitled)") {
 		t.Fatalf("want the server's reason, got %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(partyLineDir(), "guest-vm.env")); statErr == nil {

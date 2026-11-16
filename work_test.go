@@ -7,8 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -243,5 +246,226 @@ func TestBusEnrollReportsARefusal(t *testing.T) {
 	}
 	if busEnroll("Bad Name") == nil {
 		t.Fatal("bad machine name accepted")
+	}
+}
+
+// stubIssuer serves /oauth/v2/token, rotating the refresh token like Zitadel:
+// only "r" is accepted, and it comes back as access "new" / refresh "r2". It
+// counts the refreshes and holds each one briefly so racers overlap.
+func stubIssuer(t *testing.T) (url string, refreshes *atomic.Int32) {
+	t.Helper()
+	refreshes = new(atomic.Int32)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		if r.URL.Path != "/oauth/v2/token" || r.Form.Get("grant_type") != "refresh_token" {
+			t.Errorf("unexpected %s %v", r.URL.Path, r.Form)
+		}
+		refreshes.Add(1)
+		time.Sleep(100 * time.Millisecond)
+		if r.Form.Get("refresh_token") != "r" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid_grant"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "new", "refresh_token": "r2", "expires_in": 3600})
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL, refreshes
+}
+
+func withExpiredToken(t *testing.T) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := saveToken(&token{AccessToken: "old", RefreshToken: "r", Expiry: time.Now().Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func useIssuer(t *testing.T, u string) {
+	t.Helper()
+	prev := issuer
+	issuer = u
+	t.Cleanup(func() { issuer = prev })
+}
+
+func checkRefreshed(t *testing.T) {
+	t.Helper()
+	tok, err := loadToken()
+	if err != nil || tok.AccessToken != "new" || tok.RefreshToken != "r2" {
+		t.Fatalf("token file after refresh = %+v, %v", tok, err)
+	}
+}
+
+func TestConcurrentRefreshHitsTheNetworkOnce(t *testing.T) {
+	withExpiredToken(t)
+	u, refreshes := stubIssuer(t)
+	useIssuer(t, u)
+
+	var wg sync.WaitGroup
+	got := make([]string, 4)
+	errs := make([]error, 4)
+	for i := range got {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			got[i], errs[i] = accessToken()
+		}(i)
+	}
+	wg.Wait()
+	for i := range got {
+		if errs[i] != nil || got[i] != "new" {
+			t.Errorf("caller %d got %q, %v", i, got[i], errs[i])
+		}
+	}
+	if n := refreshes.Load(); n != 1 {
+		t.Fatalf("%d network refreshes, want 1", n)
+	}
+	checkRefreshed(t)
+}
+
+// TestRefreshChildProcess is the other process in
+// TestConcurrentRefreshAcrossProcesses; it does nothing on its own.
+func TestRefreshChildProcess(t *testing.T) {
+	u := os.Getenv("WORK_TEST_CHILD_ISSUER")
+	if u == "" {
+		t.Skip("helper for TestConcurrentRefreshAcrossProcesses")
+	}
+	useIssuer(t, u)
+	if tok, err := accessToken(); err != nil || tok != "new" {
+		t.Fatalf("child got %q, %v", tok, err)
+	}
+}
+
+func TestConcurrentRefreshAcrossProcesses(t *testing.T) {
+	withExpiredToken(t)
+	u, refreshes := stubIssuer(t)
+
+	var cmds []*exec.Cmd
+	for range 2 {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestRefreshChildProcess$")
+		cmd.Env = append(os.Environ(), "WORK_TEST_CHILD_ISSUER="+u)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		cmds = append(cmds, cmd)
+	}
+	for _, cmd := range cmds {
+		if err := cmd.Wait(); err != nil {
+			t.Errorf("child: %v", err)
+		}
+	}
+	if n := refreshes.Load(); n != 1 {
+		t.Fatalf("%d network refreshes, want 1", n)
+	}
+	checkRefreshed(t)
+}
+
+func TestReaderDuringWritesNeverSeesPartialFile(t *testing.T) {
+	withToken(t, `{}`)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range 50 {
+			tok := &token{AccessToken: strings.Repeat("a", 2000+i), RefreshToken: "r", Expiry: time.Now().Add(time.Hour)}
+			if err := saveToken(tok); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+	for reads := 0; ; reads++ {
+		select {
+		case <-done:
+			if reads == 0 {
+				t.Fatal("no reads overlapped the writes")
+			}
+			return
+		default:
+		}
+		b, err := os.ReadFile(tokenPath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var tok token
+		if err := json.Unmarshal(b, &tok); err != nil || tok.AccessToken == "" {
+			t.Fatalf("read %d bytes mid-write: %v", len(b), err)
+		}
+	}
+}
+
+func TestWriteLeavesNoTempFiles(t *testing.T) {
+	withToken(t, `{}`)
+	entries, _ := os.ReadDir(filepath.Dir(tokenPath()))
+	for _, e := range entries {
+		if e.Name() != "token.json" && e.Name() != "token.lock" {
+			t.Errorf("stray file %s", e.Name())
+		}
+	}
+}
+
+func TestEmptyFileIsRetriedNotSignedOut(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := os.MkdirAll(filepath.Dir(tokenPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tokenPath(), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(tokenRetryDelay / 4)
+		_ = saveToken(&token{AccessToken: "live", RefreshToken: "r", Expiry: time.Now().Add(time.Hour)})
+	}()
+	tok, err := accessToken()
+	if err != nil || tok != "live" {
+		t.Fatalf("accessToken = %q, %v", tok, err)
+	}
+}
+
+func TestEmptyFileThatStaysEmptyIsUnreadable(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	_ = os.MkdirAll(filepath.Dir(tokenPath()), 0o700)
+	_ = os.WriteFile(tokenPath(), nil, 0o600)
+	if _, err := loadToken(); err == nil || !strings.Contains(err.Error(), "work login") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestLooseModeIsTightened(t *testing.T) {
+	withToken(t, `{}`)
+	if err := os.Chmod(tokenPath(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadToken(); err != nil {
+		t.Fatal(err)
+	}
+	fi, _ := os.Stat(tokenPath())
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v, want 0600", fi.Mode().Perm())
+	}
+}
+
+func TestLogoutRemovesTokenUnderLock(t *testing.T) {
+	withToken(t, `{}`)
+	release := make(chan struct{})
+	locked := make(chan struct{})
+	go func() {
+		_ = withTokenLock(func() error { close(locked); <-release; return nil })
+	}()
+	<-locked
+	out := make(chan error)
+	go func() { out <- logout() }()
+	select {
+	case <-out:
+		t.Fatal("logout did not wait for the lock")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-out; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(tokenPath()); !os.IsNotExist(err) {
+		t.Fatalf("token.json still there: %v", err)
+	}
+	if _, err := loadToken(); err == nil || !strings.Contains(err.Error(), "not signed in") {
+		t.Fatalf("after logout: %v", err)
 	}
 }

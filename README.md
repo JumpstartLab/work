@@ -36,7 +36,10 @@ instead.
 - **Sign-in:** OAuth 2.0 device authorization grant against
   `identity.jumpstartlab.com` (Zitadel app "work CLI" in the Switchboard
   project). Tokens live in `~/.config/work/token.json` (0600) and refresh
-  themselves.
+  themselves. Other tools may share that file (the Beacon Mac app does): every
+  refresh, write and logout holds an exclusive `flock` on
+  `~/.config/work/token.lock`, and writes go to a temp file in the same
+  directory that is fsynced and renamed into place.
 - **Your boxes:** Switchboard's `boxes.mine`, `boxes.status` and `boxes.wake`
   (via the stateless `/mcp` `invoke` meta-tool). Switchboard decides ownership
   from your verified email; the box itself lives on your tailnet, and

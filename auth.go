@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -17,8 +18,11 @@ import (
 // own Google account, and the CLI keeps the access + refresh tokens in
 // ~/.config/work/token.json (0600). The access token is a JWT whose audience
 // includes the Switchboard project, which is what Switchboard's /mcp accepts.
+
+// issuer is a var so tests can point it at a stub token endpoint.
+var issuer = "https://identity.jumpstartlab.com"
+
 const (
-	issuer   = "https://identity.jumpstartlab.com"
 	clientID = "399472863209404232" // "work CLI" native app, Switchboard project
 	scope    = "openid email profile offline_access urn:zitadel:iam:org:project:id:383836969857207435:aud"
 )
@@ -38,25 +42,141 @@ func tokenPath() string {
 	return filepath.Join(dir, "work", "token.json")
 }
 
-func loadToken() (*token, error) {
-	b, err := os.ReadFile(tokenPath())
+// The token file is shared with other tools that sign in the same way (the
+// Beacon Mac app), and Zitadel rotates the refresh token on every use, so two
+// tools refreshing at once would leave one holding a dead refresh token. The
+// contract every writer follows:
+//
+//   - Hold an exclusive flock(2) on token.lock (same directory, created 0600)
+//     across read-check-refresh-write, and across logout's delete. After
+//     taking it, re-read token.json: another process may have refreshed.
+//   - Write token.json atomically: a temp file in the same directory
+//     (".token.json.*.tmp"), mode 0600, fsync, rename over token.json.
+//   - Readers don't need the lock. A file that reads empty or half-written is
+//     retried once after a short pause before it counts as unreadable.
+func tokenLockPath() string {
+	return filepath.Join(filepath.Dir(tokenPath()), "token.lock")
+}
+
+// withTokenLock runs fn while holding the exclusive lock on token.lock. The
+// lock belongs to the open file, so it also excludes other goroutines in this
+// process that take it through their own call.
+func withTokenLock(fn func() error) error {
+	p := tokenLockPath()
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(p, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
+		return err
+	}
+	defer f.Close()
+	for {
+		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+		if !errors.Is(err, syscall.EINTR) {
+			break
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("locking %s: %w", p, err)
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return fn()
+}
+
+// tokenRetryDelay is how long a reader waits before re-reading a token file
+// that looked empty or half-written.
+var tokenRetryDelay = 100 * time.Millisecond
+
+func loadToken() (*token, error) {
+	p := tokenPath()
+	t, err := readToken(p)
+	if errors.Is(err, os.ErrNotExist) {
 		return nil, errors.New("not signed in — run `work login`")
+	}
+	if err != nil {
+		time.Sleep(tokenRetryDelay)
+		t, err = readToken(p)
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, errors.New("not signed in — run `work login`")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("token file unreadable (%v) — run `work login`", err)
+	}
+	fixTokenMode(p)
+	return t, nil
+}
+
+func readToken(p string) (*token, error) {
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) == 0 {
+		return nil, errors.New("empty file")
 	}
 	var t token
 	if err := json.Unmarshal(b, &t); err != nil {
-		return nil, fmt.Errorf("token file unreadable (%v) — run `work login`", err)
+		return nil, err
 	}
 	return &t, nil
 }
 
+// fixTokenMode puts a token file that someone loosened back to 0600.
+func fixTokenMode(p string) {
+	fi, err := os.Stat(p)
+	if err != nil || fi.Mode().Perm() == 0o600 {
+		return
+	}
+	if err := os.Chmod(p, 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %s is mode %04o and could not be made 0600: %v\n", p, fi.Mode().Perm(), err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "warning: %s was mode %04o; set it back to 0600\n", p, fi.Mode().Perm())
+}
+
 func saveToken(t *token) error {
+	return withTokenLock(func() error { return writeToken(t) })
+}
+
+// writeToken replaces token.json atomically. The caller holds the token lock.
+func writeToken(t *token) error {
 	p := tokenPath()
-	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+	dir := filepath.Dir(p)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	b, _ := json.MarshalIndent(t, "", "  ")
-	return os.WriteFile(p, b, 0o600)
+	f, err := os.CreateTemp(dir, ".token.json.*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // no-op once renamed
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		return err
+	}
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		d.Close()
+	}
+	return nil
 }
 
 type tokenResponse struct {
@@ -159,33 +279,49 @@ func login(email string) error {
 }
 
 // accessToken returns a live access token, refreshing it when it is within a
-// minute of expiry.
+// minute of expiry. The refresh runs under the token lock and re-reads the file
+// first, so when another process refreshed while we waited, we use its token.
 func accessToken() (string, error) {
 	t, err := loadToken()
 	if err != nil {
 		return "", err
 	}
-	if time.Until(t.Expiry) > time.Minute {
+	if fresh(t) {
 		return t.AccessToken, nil
 	}
-	if t.RefreshToken == "" {
-		return "", errors.New("session expired — run `work login`")
-	}
-	tr, _, err := postForm("/oauth/v2/token", url.Values{
-		"grant_type": {"refresh_token"}, "refresh_token": {t.RefreshToken},
-		"client_id": {clientID}, "scope": {scope}})
-	if err != nil {
-		return "", err
-	}
-	if tr.Error != "" {
-		return "", fmt.Errorf("session expired (%s) — run `work login`", tr.Error)
-	}
-	nt := tr.toToken(t.RefreshToken)
-	if err := saveToken(nt); err != nil {
-		return "", err
-	}
-	return nt.AccessToken, nil
+	var access string
+	err = withTokenLock(func() error {
+		t, err := loadToken()
+		if err != nil {
+			return err
+		}
+		if fresh(t) {
+			access = t.AccessToken
+			return nil
+		}
+		if t.RefreshToken == "" {
+			return errors.New("session expired — run `work login`")
+		}
+		tr, _, err := postForm("/oauth/v2/token", url.Values{
+			"grant_type": {"refresh_token"}, "refresh_token": {t.RefreshToken},
+			"client_id": {clientID}, "scope": {scope}})
+		if err != nil {
+			return err
+		}
+		if tr.Error != "" {
+			return fmt.Errorf("session expired (%s) — run `work login`", tr.Error)
+		}
+		nt := tr.toToken(t.RefreshToken)
+		if err := writeToken(nt); err != nil {
+			return err
+		}
+		access = nt.AccessToken
+		return nil
+	})
+	return access, err
 }
+
+func fresh(t *token) bool { return time.Until(t.Expiry) > time.Minute }
 
 // whoami reads the email claim from the access token (display only; Switchboard
 // verifies it).
@@ -210,8 +346,14 @@ func whoami() (string, error) {
 }
 
 func logout() error {
-	err := os.Remove(tokenPath())
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	err := withTokenLock(func() error {
+		err := os.Remove(tokenPath())
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	})
+	if err != nil {
 		return err
 	}
 	fmt.Println("Signed out.")

@@ -47,6 +47,11 @@ instead.
 - **Connect:** `et <user>@<box> -c "tmux new-session -A -s work"`, falling back
   to `ssh -t`.
 
+- **Sign-in links from the box:** over ssh, `work` opens them in this machine's
+  browser. The box's `BROWSER` helper posts the link to its localhost:3336, which
+  the connection forwards back here. Only https sign-in pages on a fixed list
+  (`opener.go`) are opened. Not over Eternal Terminal; the link is shown as usual.
+
 ## Develop
 
 ```sh

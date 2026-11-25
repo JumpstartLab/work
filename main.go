@@ -183,12 +183,15 @@ func stayConnected(sshPath string, c connect) error {
 	signal.Notify(sig, os.Interrupt)
 	defer signal.Stop(sig)
 
+	openerPort, stopOpener := startOpener(openBrowser)
+	defer stopOpener()
+
 	everUp := false
 	var offlineSince time.Time
 	wait := reconnectWait
 	for {
 		start := time.Now()
-		cmd := exec.Command(sshPath, connectArgs("ssh", c)[1:]...)
+		cmd := exec.Command(sshPath, sshArgs(c, openerPort)[1:]...)
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 		err := cmd.Run()
 		var exit *exec.ExitError
@@ -228,12 +231,22 @@ func connectArgs(tool string, c connect) []string {
 	if tool == "et" {
 		return []string{"et", "-t", mcpCallbackPort + ":" + mcpCallbackPort, target, "-c", attach}
 	}
-	return []string{"ssh", "-t",
+	return sshArgs(c, "")
+}
+
+// sshArgs is connectArgs for ssh; openerPort, when set, is the local port that
+// opens the box's sign-in links (opener.go).
+func sshArgs(c connect, openerPort string) []string {
+	args := []string{"ssh", "-t",
 		// Notice a dead connection within ~45s instead of hanging on it.
 		"-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
 		// macOS: ask for the key's passphrase once and keep it in the Keychain.
 		"-o", "IgnoreUnknown=UseKeychain", "-o", "UseKeychain=yes", "-o", "AddKeysToAgent=yes",
-		"-L", mcpCallbackPort + ":localhost:" + mcpCallbackPort, target, attach}
+		"-L", mcpCallbackPort + ":localhost:" + mcpCallbackPort}
+	if openerPort != "" {
+		args = append(args, "-R", "127.0.0.1:"+openPort+":127.0.0.1:"+openerPort)
+	}
+	return append(args, c.User+"@"+c.Host, "tmux new-session -A -s work")
 }
 
 func code(name, dir string) error {
